@@ -17,7 +17,24 @@ import {
   Link2,
   ClipboardPaste,
   FileText,
+  Cloud,
+  CloudOff,
+  RefreshCw,
+  Settings,
+  ExternalLink,
+  CheckCircle2,
 } from "lucide-react";
+import {
+  getSyncConfig,
+  setSyncConfig,
+  clearSyncConfig,
+  isSyncEnabled,
+  pullFromGist,
+  pushToGist,
+  createGist,
+  mergeEditorials,
+  getLastSync,
+} from "./sync.js";
 
 const STORAGE_KEY = "al-naba-editorials";
 
@@ -910,8 +927,176 @@ function LibraryView({ editorials, onSelect, onAdd, onExportCSV, onExportBackup,
 }
 
 // ---------------------------------------------------------------------------
-// Root
+// Settings view
 // ---------------------------------------------------------------------------
+
+function SettingsView({ onBack, onSyncChange }) {
+  const initial = getSyncConfig();
+  const [pat, setPat] = useState(initial.pat);
+  const [gistId, setGistId] = useState(initial.gistId);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [error, setError] = useState(null);
+  const lastSync = getLastSync();
+
+  const showOK = (m) => { setMessage(m); setError(null); };
+  const showErr = (m) => { setError(m); setMessage(null); };
+
+  const handleSave = () => {
+    if (!pat.trim() || !gistId.trim()) {
+      showErr("Both PAT and Gist ID are required.");
+      return;
+    }
+    setSyncConfig({ pat: pat.trim(), gistId: gistId.trim() });
+    showOK("Sync settings saved. The next change will sync.");
+    onSyncChange();
+  };
+
+  const handleCreate = async () => {
+    if (!pat.trim()) {
+      showErr("Paste a PAT first, then click Create gist.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const newId = await createGist(pat.trim());
+      setGistId(newId);
+      setSyncConfig({ pat: pat.trim(), gistId: newId });
+      showOK(`New private gist created. ID: ${newId}`);
+      onSyncChange();
+    } catch (e) {
+      showErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (!pat.trim() || !gistId.trim()) {
+      showErr("Save the settings first.");
+      return;
+    }
+    setBusy(true);
+    setSyncConfig({ pat: pat.trim(), gistId: gistId.trim() });
+    try {
+      const data = await pullFromGist();
+      const count = Object.keys(data).length;
+      showOK(`Connection works. Gist currently holds ${count} editorial${count === 1 ? "" : "s"}.`);
+      onSyncChange();
+    } catch (e) {
+      showErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisable = () => {
+    if (!window.confirm("Disable sync? Your local data stays. Cross-device sync will stop until you re-enable it.")) return;
+    clearSyncConfig();
+    setPat("");
+    setGistId("");
+    showOK("Sync disabled. Local data is unchanged.");
+    onSyncChange();
+  };
+
+  return (
+    <div className="anaba-fade-in">
+      <button className="anaba-button" onClick={onBack} style={{ marginBottom: "1.5rem" }}>
+        <ArrowLeft size={14} /> Library
+      </button>
+
+      <SectionLabel>Cross-device sync via private GitHub Gist</SectionLabel>
+      <div className="anaba-dim" style={{ fontSize: "0.875rem", marginBottom: "1.5rem", lineHeight: 1.6 }}>
+        The tracker can mirror your data to a private GitHub Gist so it follows you across devices. Free, uses your existing GitHub account. Local copy is kept for speed and offline use.
+      </div>
+
+      <div className="anaba-card" style={{ marginBottom: "1.5rem" }}>
+        <SectionLabel>Step 1: Create a Personal Access Token</SectionLabel>
+        <div className="anaba-dim" style={{ fontSize: "0.875rem", marginBottom: "0.75rem", lineHeight: 1.6 }}>
+          Go to GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. Give it the <strong>Gists: read and write</strong> permission (under "Account permissions"). No repository permissions needed. Set an expiration that suits you. Copy the token (it shows only once).
+        </div>
+        <a
+          href="https://github.com/settings/personal-access-tokens/new"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="anaba-button"
+          style={{ textDecoration: "none" }}
+        >
+          <ExternalLink size={14} /> Open GitHub token page
+        </a>
+      </div>
+
+      <div style={{ marginBottom: "1rem" }}>
+        <SectionLabel>GitHub Personal Access Token</SectionLabel>
+        <input
+          className="anaba-input mono"
+          type="password"
+          placeholder="github_pat_..."
+          value={pat}
+          onChange={(e) => setPat(e.target.value)}
+          autoComplete="off"
+        />
+        <div className="anaba-faint" style={{ fontSize: "0.72rem", marginTop: "0.3rem" }}>
+          Stored only in this browser's localStorage. Never sent anywhere except api.github.com.
+        </div>
+      </div>
+
+      <div style={{ marginBottom: "1.5rem" }}>
+        <SectionLabel>Gist ID</SectionLabel>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <input
+            className="anaba-input mono"
+            placeholder="paste an existing gist ID, or click Create"
+            value={gistId}
+            onChange={(e) => setGistId(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button className="anaba-button" onClick={handleCreate} disabled={busy || !pat.trim()}>
+            {busy ? <RefreshCw size={14} className="anaba-spin" /> : <Plus size={14} />} Create
+          </button>
+        </div>
+        <div className="anaba-faint" style={{ fontSize: "0.72rem", marginTop: "0.3rem" }}>
+          On your first device, click <strong>Create</strong> to make a new private gist. On other devices, paste the same Gist ID and the same PAT (or a different PAT with gist access) to share the data.
+        </div>
+      </div>
+
+      {message && (
+        <div className="anaba-card" style={{ borderColor: "var(--ochre-dim)", marginBottom: "1rem", display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+          <CheckCircle2 size={16} className="anaba-ochre" style={{ flexShrink: 0, marginTop: "0.15rem" }} />
+          <div className="anaba-ochre" style={{ fontSize: "0.85rem", wordBreak: "break-all" }}>{message}</div>
+        </div>
+      )}
+      {error && (
+        <div className="anaba-card" style={{ borderColor: "var(--rust)", marginBottom: "1rem", display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+          <AlertCircle size={16} className="anaba-rust" style={{ flexShrink: 0, marginTop: "0.15rem" }} />
+          <div className="anaba-rust" style={{ fontSize: "0.85rem" }}>{error}</div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <button className="anaba-button anaba-button-primary" onClick={handleSave} disabled={busy}>
+          <Save size={14} /> Save sync settings
+        </button>
+        <button className="anaba-button" onClick={handleTest} disabled={busy}>
+          {busy ? <RefreshCw size={14} className="anaba-spin" /> : <RefreshCw size={14} />} Test connection
+        </button>
+        {(initial.pat || initial.gistId) && (
+          <button className="anaba-button anaba-button-danger" onClick={handleDisable}>
+            <CloudOff size={14} /> Disable sync
+          </button>
+        )}
+      </div>
+
+      {lastSync && (
+        <div className="anaba-faint" style={{ fontSize: "0.72rem", marginTop: "1.5rem" }}>
+          Last successful sync: {new Date(lastSync).toLocaleString("en-GB")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 export default function Tracker() {
   const [editorials, setEditorials] = useState({});
@@ -921,10 +1106,80 @@ export default function Tracker() {
   const [filter, setFilter] = useState("");
   const [tagFilter, setTagFilter] = useState("");
 
+  // Sync state
+  const [syncEnabled, setSyncEnabled] = useState(isSyncEnabled());
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle, syncing, error, off
+  const [syncError, setSyncError] = useState(null);
+  const pendingPush = useRef(null);
+  const initialPullDone = useRef(false);
+
+  // Initial load: local first, then merge with gist if sync is enabled.
   useEffect(() => {
-    setEditorials(loadEditorials());
+    const local = loadEditorials();
+    setEditorials(local);
     setLoaded(true);
+
+    if (isSyncEnabled()) {
+      (async () => {
+        setSyncStatus("syncing");
+        try {
+          const remote = await pullFromGist();
+          const merged = mergeEditorials(local, remote);
+          const localStr = JSON.stringify(local);
+          const mergedStr = JSON.stringify(merged);
+          const remoteStr = JSON.stringify(remote);
+
+          if (mergedStr !== localStr) {
+            setEditorials(merged);
+            saveEditorials(merged);
+          }
+          if (mergedStr !== remoteStr) {
+            // Local had something remote didn't. Push the merged result so remote catches up.
+            try {
+              await pushToGist(merged);
+            } catch {
+              // Non-fatal. The next save will push.
+            }
+          }
+          setSyncStatus("idle");
+          setSyncError(null);
+        } catch (e) {
+          setSyncStatus("error");
+          setSyncError(e.message);
+        } finally {
+          initialPullDone.current = true;
+        }
+      })();
+    } else {
+      setSyncStatus("off");
+      initialPullDone.current = true;
+    }
   }, []);
+
+  // Push to gist when editorials change. Debounced 800ms.
+  // Only runs after initial pull to avoid clobbering remote with local-only data.
+  useEffect(() => {
+    if (!loaded) return;
+    if (!syncEnabled) return;
+    if (!initialPullDone.current) return;
+
+    if (pendingPush.current) clearTimeout(pendingPush.current);
+    pendingPush.current = setTimeout(async () => {
+      setSyncStatus("syncing");
+      try {
+        await pushToGist(editorials);
+        setSyncStatus("idle");
+        setSyncError(null);
+      } catch (e) {
+        setSyncStatus("error");
+        setSyncError(e.message);
+      }
+    }, 800);
+
+    return () => {
+      if (pendingPush.current) clearTimeout(pendingPush.current);
+    };
+  }, [editorials, syncEnabled, loaded]);
 
   const editorialList = useMemo(() => Object.values(editorials), [editorials]);
 
@@ -990,6 +1245,37 @@ export default function Tracker() {
     reader.readAsText(file);
   };
 
+  const handleSyncNow = async () => {
+    if (!syncEnabled) return;
+    setSyncStatus("syncing");
+    try {
+      const remote = await pullFromGist();
+      const merged = mergeEditorials(editorials, remote);
+      setEditorials(merged);
+      saveEditorials(merged);
+      await pushToGist(merged);
+      setSyncStatus("idle");
+      setSyncError(null);
+    } catch (e) {
+      setSyncStatus("error");
+      setSyncError(e.message);
+    }
+  };
+
+  const handleSyncChange = () => {
+    setSyncEnabled(isSyncEnabled());
+    setSyncStatus(isSyncEnabled() ? "idle" : "off");
+    setSyncError(null);
+    initialPullDone.current = true;
+  };
+
+  const syncPillProps = (() => {
+    if (syncStatus === "off") return { icon: CloudOff, text: "sync off", variant: "default", title: "Click to configure cross-device sync" };
+    if (syncStatus === "syncing") return { icon: RefreshCw, text: "syncing", variant: "default", spinning: true, title: "Syncing with gist..." };
+    if (syncStatus === "error") return { icon: AlertCircle, text: "sync error", variant: "rust", title: syncError || "Sync error. Click for settings." };
+    return { icon: Cloud, text: "synced", variant: "ochre", title: "Synced with gist. Click to manage." };
+  })();
+
   return (
     <>
       <style>{styles}</style>
@@ -1003,8 +1289,34 @@ export default function Tracker() {
               </div>
               <div className="anaba-masthead-title display">al-Nabaʾ editorials</div>
             </div>
-            <div className="mono anaba-faint" style={{ fontSize: "0.7rem", letterSpacing: "0.1em" }}>
-              data stored locally in your browser
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              {syncEnabled && syncStatus !== "off" && syncStatus !== "syncing" && syncStatus !== "error" && (
+                <button
+                  className="anaba-button"
+                  onClick={handleSyncNow}
+                  title="Force a sync now"
+                  style={{ padding: "0.4rem 0.6rem" }}
+                >
+                  <RefreshCw size={13} />
+                </button>
+              )}
+              <button
+                className={syncPillProps.variant === "rust" ? "anaba-pill anaba-pill-rust" : syncPillProps.variant === "ochre" ? "anaba-pill anaba-pill-ochre" : "anaba-pill"}
+                style={{ cursor: "pointer", border: "1px solid var(--rule)" }}
+                onClick={() => setView("settings")}
+                title={syncPillProps.title}
+              >
+                <syncPillProps.icon size={11} className={syncPillProps.spinning ? "anaba-spin" : ""} />
+                {syncPillProps.text}
+              </button>
+              <button
+                className="anaba-button"
+                onClick={() => setView("settings")}
+                style={{ padding: "0.4rem 0.6rem" }}
+                title="Settings"
+              >
+                <Settings size={14} />
+              </button>
             </div>
           </div>
         </div>
@@ -1012,6 +1324,8 @@ export default function Tracker() {
         <div style={{ marginTop: "1.5rem" }}>
           {!loaded ? (
             <div className="anaba-dim" style={{ padding: "2rem", textAlign: "center" }}>Loading...</div>
+          ) : view === "settings" ? (
+            <SettingsView onBack={() => setView("library")} onSyncChange={handleSyncChange} />
           ) : view === "add" ? (
             <AddView existing={editorials} onSave={handleSave} onCancel={() => setView("library")} />
           ) : view === "detail" && editorials[selectedIssue] ? (
