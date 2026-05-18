@@ -25,13 +25,11 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install
-        run: npm install
-
       - name: Build
-        run: npm run build
+        run: npm install && npm run build
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_GITHUB_REPO: ${{ github.repository }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
