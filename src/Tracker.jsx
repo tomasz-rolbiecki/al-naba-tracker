@@ -42,9 +42,13 @@ const GITHUB_REPO = import.meta.env.VITE_GITHUB_REPO || "";
 
 function githubNewFileURL(draft) {
   if (!GITHUB_REPO) return null;
-  const content = JSON.stringify(draft, null, 2);
   const filename = `${draft.issueNumber}.json`;
-  return `https://github.com/${GITHUB_REPO}/new/main/data/editorials?filename=${encodeURIComponent(filename)}&value=${encodeURIComponent(content)}`;
+  // Note: we deliberately do NOT pass the content via `?value=` here.
+  // GitHub's URL handler rejects long values (typically anything above
+  // a few KB) with a 404. Instead, the Add view copies the JSON to the
+  // clipboard before opening this URL, and the user pastes it into the
+  // GitHub editor manually.
+  return `https://github.com/${GITHUB_REPO}/new/main/data/editorials?filename=${encodeURIComponent(filename)}`;
 }
 
 function githubEditFileURL(issueNumber) {
@@ -288,11 +292,22 @@ function AddView({ onCancel, existing }) {
         <>
           <SectionLabel>Commit to the repo</SectionLabel>
           <div className="anaba-dim" style={{ fontSize: "0.85rem", marginBottom: "1rem", lineHeight: 1.55 }}>
-            The button below opens GitHub's "Create new file" page with the filename and content pre-filled. Review on GitHub, then click <strong>Commit changes</strong>. The tracker will refresh automatically once the deploy finishes (1 to 2 minutes).
+            The button below copies the JSON to your clipboard and opens GitHub's "Create new file" page with the filename already set. <strong>Paste</strong> (Cmd/Ctrl+V) into the GitHub editor, then click <strong>Commit changes</strong>. The tracker will refresh automatically once the deploy finishes (1 to 2 minutes).
           </div>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            <a className="anaba-button anaba-button-primary" href={githubURL} target="_blank" rel="noopener noreferrer">
-              <Github size={14} /> Open on GitHub to commit
+            <a
+              className="anaba-button anaba-button-primary"
+              href={githubURL}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => {
+                const content = JSON.stringify(draft, null, 2);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  navigator.clipboard.writeText(content).catch(() => {});
+                }
+              }}
+            >
+              <Github size={14} /> Copy JSON and open GitHub
             </a>
             <button className="anaba-button" onClick={() => {
               downloadFile(JSON.stringify(draft, null, 2), `${draft.issueNumber}.json`, "application/json");
