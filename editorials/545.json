@@ -1,0 +1,41 @@
+{
+  "issueNumber": 545,
+  "publicationDate": "2026-04-30",
+  "title": "al-Qaeda's Oscillations!",
+  "summary": "Page-three editorial framed as a doctrinal indictment of al-Qaeda's methodological incoherence, illustrated by a jagged line graph overlaid on images of senior al-Qaeda figures. Argues that al-Qaeda's contemporary positions across Syria, Afghanistan, and the Sahel reveal an underlying acceptance of secular national emirates, tribal nationalism, and engagement with the international order, in contradiction to the group's stated jihadist principles. In Syria, charges al-Qaeda with continued endorsement of al-Sharaa's post-Assad government despite its civil-state character. In Afghanistan, charges al-Qaeda with backing years of Taliban dialogue with the international community and ultimately legitimising a state described as 'the jewel of the international community'. In the Sahel, devotes the heaviest argument to al-Qaeda's African franchises and their accommodation with Tuareg separatism, accusing them of moving toward a 'separatist nationalist democracy' under the banner of self-rule for Azawad, prioritising tribal-ethnic bonds over the global jihadist project. Frames al-Qaeda's recent media output as relying on outdated templates and uncritical loyalty.",
+  "themes": [
+    "criticism of rival jihadist groups",
+    "rejection of nationalism",
+    "rejection of democracy",
+    "rejection of negotiation",
+    "takfir",
+    "condemnation of apostasy"
+  ],
+  "geographicFocus": [
+    "Syria",
+    "Afghanistan",
+    "Sahel",
+    "Mali"
+  ],
+  "groupsMentioned": [
+    "al-Qaeda",
+    "JNIM",
+    "Hayat Tahrir al-Sham",
+    "Taliban",
+    "Azawad separatist movement"
+  ],
+  "individualsMentioned": [
+    "al-Sharaa"
+  ],
+  "keyClaims": [
+    "al-Qaeda's contemporary positions are methodologically incoherent and oscillate between jihadist rhetoric and accommodation with the international order.",
+    "al-Qaeda has endorsed the post-Assad Syrian government despite its civil-state character.",
+    "al-Qaeda legitimised years of Taliban dialogue with the international community, producing a state that has been absorbed into the international order.",
+    "al-Qaeda's African franchises have moved toward acceptance of a separatist nationalist democracy in the Azawad region, privileging tribal-ethnic identity over the global jihadist project.",
+    "al-Qaeda's adherents are uncritical followers ('dervishes') operating from outdated rhetorical templates."
+  ],
+  "significanceAssessment": "Completes a three-week sequence in which al-Naba has methodically attacked each of IS's principal Sunni jihadist rivals: HTS in issue 547, the Afghan Taliban and Deobandi establishment in 546, and al-Qaeda Central and its franchises in 545. The heavy emphasis on Sahelian dynamics is notable. Framing JNIM's accommodation of Azawad nationalism as a defining contradiction signals an IS effort to compete for ideological terrain in the Sahel at a moment when JNIM has consolidated significant territorial influence. The thematic clustering across three consecutive issues suggests a coordinated editorial campaign rather than ad hoc polemic.",
+  "confidence": "high",
+  "notes": "Gregorian date converted from Hijri 12 Dhu al-Qa'da 1447. Page 3 editorial only. The Azawad separatist movement is referenced in the source as 'Azawad Liberation Front'; mapped to neutral analytical English.",
+  "manualNotes": ""
+}
