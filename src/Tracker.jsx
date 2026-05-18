@@ -5,9 +5,9 @@ import {
   ClipboardPaste, ExternalLink, Github,
 } from "lucide-react";
 
-// Bundle every editorial JSON file in data/editorials at build time.
+// Bundle every editorial JSON file in editorials/ at build time.
 // Vite resolves the glob; the user adds files by committing them to that folder.
-const editorialModules = import.meta.glob("../data/editorials/*.json", { eager: true });
+const editorialModules = import.meta.glob("../editorials/*.json", { eager: true });
 
 const ALL_EDITORIALS = (() => {
   const result = {};
@@ -48,17 +48,17 @@ function githubNewFileURL(draft) {
   // a few KB) with a 404. Instead, the Add view copies the JSON to the
   // clipboard before opening this URL, and the user pastes it into the
   // GitHub editor manually.
-  return `https://github.com/${GITHUB_REPO}/new/main/data/editorials?filename=${encodeURIComponent(filename)}`;
+  return `https://github.com/${GITHUB_REPO}/new/main/editorials?filename=${encodeURIComponent(filename)}`;
 }
 
 function githubEditFileURL(issueNumber) {
   if (!GITHUB_REPO) return null;
-  return `https://github.com/${GITHUB_REPO}/edit/main/data/editorials/${issueNumber}.json`;
+  return `https://github.com/${GITHUB_REPO}/edit/main/editorials/${issueNumber}.json`;
 }
 
 function githubViewFileURL(issueNumber) {
   if (!GITHUB_REPO) return null;
-  return `https://github.com/${GITHUB_REPO}/blob/main/data/editorials/${issueNumber}.json`;
+  return `https://github.com/${GITHUB_REPO}/blob/main/editorials/${issueNumber}.json`;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +324,7 @@ function AddView({ onCancel, existing }) {
         <>
           <div className="anaba-banner">
             <AlertCircle size={14} className="anaba-rust" style={{ flexShrink: 0, marginTop: "0.15rem" }} />
-            <span>GitHub repo isn't configured (VITE_GITHUB_REPO env var). You can download the JSON below and upload it manually to <code>data/editorials/</code> in your repo.</span>
+            <span>GitHub repo isn't configured (VITE_GITHUB_REPO env var). You can download the JSON below and upload it manually to <code>editorials/</code> in your repo.</span>
           </div>
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button className="anaba-button anaba-button-primary" onClick={() => {
