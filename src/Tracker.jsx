@@ -1,60 +1,60 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
-  Search,
-  Trash2,
-  Download,
-  ArrowLeft,
-  Plus,
-  X,
-  AlertCircle,
-  Tag,
-  MapPin,
-  Users,
-  User,
-  Save,
-  Edit3,
-  Library,
-  Link2,
-  ClipboardPaste,
-  FileText,
-  Cloud,
-  CloudOff,
-  RefreshCw,
-  Settings,
-  ExternalLink,
-  CheckCircle2,
+  Search, Trash2, Download, ArrowLeft, Plus, X, AlertCircle,
+  Tag, MapPin, Users, User, Edit3, Library, Link2,
+  ClipboardPaste, ExternalLink, Github,
 } from "lucide-react";
-import {
-  getSyncConfig,
-  setSyncConfig,
-  clearSyncConfig,
-  isSyncEnabled,
-  pullFromGist,
-  pushToGist,
-  createGist,
-  mergeEditorials,
-  getLastSync,
-} from "./sync.js";
 
-const STORAGE_KEY = "al-naba-editorials";
+// Bundle every editorial JSON file in data/editorials at build time.
+// Vite resolves the glob; the user adds files by committing them to that folder.
+const editorialModules = import.meta.glob("../data/editorials/*.json", { eager: true });
 
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-function loadEditorials() {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
+const ALL_EDITORIALS = (() => {
+  const result = {};
+  for (const [path, mod] of Object.entries(editorialModules)) {
+    const data = mod.default || mod;
+    if (data && data.issueNumber != null) {
+      result[data.issueNumber] = normalise(data);
+    }
   }
+  return result;
+})();
+
+function normalise(e) {
+  return {
+    issueNumber: e.issueNumber,
+    publicationDate: e.publicationDate || "",
+    title: e.title || "",
+    summary: e.summary || "",
+    themes: Array.isArray(e.themes) ? e.themes : [],
+    geographicFocus: Array.isArray(e.geographicFocus) ? e.geographicFocus : [],
+    groupsMentioned: Array.isArray(e.groupsMentioned) ? e.groupsMentioned : [],
+    individualsMentioned: Array.isArray(e.individualsMentioned) ? e.individualsMentioned : [],
+    keyClaims: Array.isArray(e.keyClaims) ? e.keyClaims : [],
+    significanceAssessment: e.significanceAssessment || "",
+    confidence: e.confidence || "",
+    notes: e.notes || "",
+    manualNotes: e.manualNotes || "",
+  };
 }
 
-function saveEditorials(editorials) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(editorials));
+const GITHUB_REPO = import.meta.env.VITE_GITHUB_REPO || "";
+
+function githubNewFileURL(draft) {
+  if (!GITHUB_REPO) return null;
+  const content = JSON.stringify(draft, null, 2);
+  const filename = `${draft.issueNumber}.json`;
+  return `https://github.com/${GITHUB_REPO}/new/main/data/editorials?filename=${encodeURIComponent(filename)}&value=${encodeURIComponent(content)}`;
+}
+
+function githubEditFileURL(issueNumber) {
+  if (!GITHUB_REPO) return null;
+  return `https://github.com/${GITHUB_REPO}/edit/main/data/editorials/${issueNumber}.json`;
+}
+
+function githubViewFileURL(issueNumber) {
+  if (!GITHUB_REPO) return null;
+  return `https://github.com/${GITHUB_REPO}/blob/main/data/editorials/${issueNumber}.json`;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,29 +62,17 @@ function saveEditorials(editorials) {
 // ---------------------------------------------------------------------------
 
 function extractJSONFromPaste(text) {
-  if (!text || !text.trim()) {
-    throw new Error("Nothing pasted");
-  }
-
-  // Try fenced JSON block first
+  if (!text || !text.trim()) throw new Error("Nothing pasted");
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = fenceMatch ? fenceMatch[1] : text;
-
-  // Find first { and last } in the candidate
   const first = candidate.indexOf("{");
   const last = candidate.lastIndexOf("}");
   if (first === -1 || last === -1) {
     throw new Error("No JSON object found. Make sure you copied the JSON block from the skill output.");
   }
-
   let parsed;
-  try {
-    parsed = JSON.parse(candidate.slice(first, last + 1));
-  } catch (e) {
-    throw new Error(`JSON looks malformed: ${e.message}`);
-  }
-
-  // Normalise: ensure all expected fields exist
+  try { parsed = JSON.parse(candidate.slice(first, last + 1)); }
+  catch (e) { throw new Error(`JSON looks malformed: ${e.message}`); }
   return {
     issueNumber: parsed.issueNumber ?? null,
     publicationDate: parsed.publicationDate ?? "",
@@ -102,101 +90,48 @@ function extractJSONFromPaste(text) {
   };
 }
 
-function emptyDraft() {
-  return {
-    issueNumber: null,
-    publicationDate: "",
-    title: "",
-    summary: "",
-    themes: [],
-    geographicFocus: [],
-    groupsMentioned: [],
-    individualsMentioned: [],
-    keyClaims: [],
-    significanceAssessment: "",
-    confidence: "unknown",
-    notes: "",
-    manualNotes: "",
-  };
-}
-
 // ---------------------------------------------------------------------------
-// Similarity scoring (Jaccard across tag fields)
+// Similarity, tags, CSV
 // ---------------------------------------------------------------------------
 
-function normaliseTag(t) {
-  return (t || "").toString().trim().toLowerCase();
-}
+function normaliseTag(t) { return (t || "").toString().trim().toLowerCase(); }
 
 function similarityScore(a, b) {
   if (a.issueNumber === b.issueNumber) return -1;
   const buckets = ["themes", "geographicFocus", "groupsMentioned", "individualsMentioned"];
-  let shared = 0;
-  let total = 0;
+  let shared = 0, total = 0;
   for (const k of buckets) {
     const sa = new Set((a[k] || []).map(normaliseTag));
     const sb = new Set((b[k] || []).map(normaliseTag));
-    for (const v of sa) {
-      total++;
-      if (sb.has(v)) shared++;
-    }
-    for (const v of sb) {
-      if (!sa.has(v)) total++;
-    }
+    for (const v of sa) { total++; if (sb.has(v)) shared++; }
+    for (const v of sb) { if (!sa.has(v)) total++; }
   }
-  if (total === 0) return 0;
-  return shared / total;
+  return total === 0 ? 0 : shared / total;
 }
 
 function findSimilar(target, all, limit = 4) {
-  return all
-    .map((e) => ({ editorial: e, score: similarityScore(target, e) }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+  return all.map((e) => ({ editorial: e, score: similarityScore(target, e) }))
+    .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
 function aggregateTags(editorials, field) {
   const counts = {};
-  for (const e of editorials) {
-    for (const t of e[field] || []) {
-      const n = normaliseTag(t);
-      if (!n) continue;
-      counts[n] = (counts[n] || 0) + 1;
-    }
+  for (const e of editorials) for (const t of e[field] || []) {
+    const n = normaliseTag(t);
+    if (n) counts[n] = (counts[n] || 0) + 1;
   }
   return Object.entries(counts).sort((a, b) => b[1] - a[1]);
 }
 
-// ---------------------------------------------------------------------------
-// CSV
-// ---------------------------------------------------------------------------
-
 function toCSV(editorials) {
-  const headers = [
-    "issueNumber",
-    "publicationDate",
-    "title",
-    "summary",
-    "themes",
-    "geographicFocus",
-    "groupsMentioned",
-    "individualsMentioned",
-    "keyClaims",
-    "significanceAssessment",
-    "manualNotes",
-    "createdAt",
-  ];
+  const headers = ["issueNumber","publicationDate","title","summary","themes","geographicFocus","groupsMentioned","individualsMentioned","keyClaims","significanceAssessment","manualNotes"];
   const escape = (v) => {
     if (v === null || v === undefined) return "";
     const s = Array.isArray(v) ? v.join("; ") : String(v);
-    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const rows = [headers.join(",")];
-  for (const e of editorials) {
-    rows.push(headers.map((h) => escape(e[h])).join(","));
-  }
+  for (const e of editorials) rows.push(headers.map((h) => escape(e[h])).join(","));
   return rows.join("\n");
 }
 
@@ -204,24 +139,8 @@ function downloadFile(content, filename, mime) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
-}
-
-// ---------------------------------------------------------------------------
-// Backup/restore from JSON
-// ---------------------------------------------------------------------------
-
-function exportBackup(editorials) {
-  const payload = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    editorials,
-  };
-  const date = new Date().toISOString().slice(0, 10);
-  downloadFile(JSON.stringify(payload, null, 2), `al-naba-backup-${date}.json`, "application/json");
 }
 
 // ---------------------------------------------------------------------------
@@ -232,216 +151,50 @@ const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
   :root {
-    --ink: #f1ead8;
-    --ink-dim: #b3a98f;
-    --ink-faint: #7a7058;
-    --paper: #14130f;
-    --paper-2: #1c1a14;
-    --paper-3: #25221a;
-    --rule: #2e2a1f;
-    --ochre: #d4a14a;
-    --ochre-dim: #8c6a30;
-    --rust: #b6573a;
+    --ink: #f1ead8; --ink-dim: #b3a98f; --ink-faint: #7a7058;
+    --paper: #14130f; --paper-2: #1c1a14; --paper-3: #25221a;
+    --rule: #2e2a1f; --ochre: #d4a14a; --ochre-dim: #8c6a30; --rust: #b6573a;
   }
-
   html, body { margin: 0; padding: 0; }
-  body {
-    font-family: 'IBM Plex Sans', system-ui, sans-serif;
-    background: var(--paper);
-    color: var(--ink);
-    min-height: 100vh;
-    line-height: 1.5;
-  }
+  body { font-family: 'IBM Plex Sans', system-ui, sans-serif; background: var(--paper); color: var(--ink); min-height: 100vh; line-height: 1.5; }
   * { box-sizing: border-box; }
-
   .display { font-family: 'Fraunces', Georgia, serif; font-optical-sizing: auto; }
   .mono { font-family: 'IBM Plex Mono', monospace; }
-
-  .anaba-dim { color: var(--ink-dim); }
-  .anaba-faint { color: var(--ink-faint); }
-  .anaba-ochre { color: var(--ochre); }
-  .anaba-rust { color: var(--rust); }
-
-  .anaba-button {
-    font-family: 'IBM Plex Sans', sans-serif;
-    background: transparent;
-    color: var(--ink);
-    border: 1px solid var(--rule);
-    padding: 0.5rem 1rem;
-    font-size: 0.875rem;
-    letter-spacing: 0.02em;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
+  .anaba-dim { color: var(--ink-dim); } .anaba-faint { color: var(--ink-faint); }
+  .anaba-ochre { color: var(--ochre); } .anaba-rust { color: var(--rust); }
+  .anaba-button { font-family: 'IBM Plex Sans', sans-serif; background: transparent; color: var(--ink); border: 1px solid var(--rule); padding: 0.5rem 1rem; font-size: 0.875rem; letter-spacing: 0.02em; cursor: pointer; transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 0.5rem; text-decoration: none; }
   .anaba-button:hover { border-color: var(--ochre); color: var(--ochre); }
   .anaba-button:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .anaba-button-primary {
-    background: var(--ochre);
-    color: var(--paper);
-    border-color: var(--ochre);
-    font-weight: 500;
-  }
+  .anaba-button-primary { background: var(--ochre); color: var(--paper); border-color: var(--ochre); font-weight: 500; }
   .anaba-button-primary:hover { background: var(--ink); border-color: var(--ink); color: var(--paper); }
   .anaba-button-danger:hover { border-color: var(--rust); color: var(--rust); }
-
-  .anaba-input {
-    font-family: 'IBM Plex Sans', sans-serif;
-    background: var(--paper-2);
-    color: var(--ink);
-    border: 1px solid var(--rule);
-    padding: 0.5rem 0.75rem;
-    font-size: 0.875rem;
-    width: 100%;
-    outline: none;
-  }
+  .anaba-input { font-family: 'IBM Plex Sans', sans-serif; background: var(--paper-2); color: var(--ink); border: 1px solid var(--rule); padding: 0.5rem 0.75rem; font-size: 0.875rem; width: 100%; outline: none; }
   .anaba-input:focus { border-color: var(--ochre); }
-
-  .anaba-textarea {
-    font-family: 'IBM Plex Sans', sans-serif;
-    background: var(--paper-2);
-    color: var(--ink);
-    border: 1px solid var(--rule);
-    padding: 0.75rem;
-    font-size: 0.9rem;
-    width: 100%;
-    outline: none;
-    resize: vertical;
-    line-height: 1.55;
-  }
+  .anaba-textarea { font-family: 'IBM Plex Sans', sans-serif; background: var(--paper-2); color: var(--ink); border: 1px solid var(--rule); padding: 0.75rem; font-size: 0.9rem; width: 100%; outline: none; resize: vertical; line-height: 1.55; }
   .anaba-textarea:focus { border-color: var(--ochre); }
-
-  .anaba-textarea-mono {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.82rem;
-  }
-
-  .anaba-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.72rem;
-    font-family: 'IBM Plex Mono', monospace;
-    background: var(--paper-3);
-    color: var(--ink-dim);
-    border: 1px solid var(--rule);
-    letter-spacing: 0.03em;
-  }
-  .anaba-pill-ochre {
-    background: rgba(212, 161, 74, 0.08);
-    color: var(--ochre);
-    border-color: var(--ochre-dim);
-  }
-  .anaba-pill-rust {
-    background: rgba(182, 87, 58, 0.08);
-    color: var(--rust);
-    border-color: var(--rust);
-  }
-
-  .anaba-card {
-    background: var(--paper-2);
-    border: 1px solid var(--rule);
-    padding: 1.25rem;
-    transition: border-color 0.15s ease;
-  }
+  .anaba-textarea-mono { font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; }
+  .anaba-pill { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.15rem 0.5rem; font-size: 0.72rem; font-family: 'IBM Plex Mono', monospace; background: var(--paper-3); color: var(--ink-dim); border: 1px solid var(--rule); letter-spacing: 0.03em; }
+  .anaba-pill-ochre { background: rgba(212, 161, 74, 0.08); color: var(--ochre); border-color: var(--ochre-dim); }
+  .anaba-pill-rust { background: rgba(182, 87, 58, 0.08); color: var(--rust); border-color: var(--rust); }
+  .anaba-card { background: var(--paper-2); border: 1px solid var(--rule); padding: 1.25rem; transition: border-color 0.15s ease; }
   .anaba-card:hover { border-color: var(--ochre-dim); }
   .anaba-card-clickable { cursor: pointer; }
-
-  .anaba-masthead {
-    border-bottom: 1px solid var(--rule);
-    padding: 1.5rem 0 1rem 0;
-  }
-  .anaba-masthead-title {
-    font-family: 'Fraunces', serif;
-    font-weight: 500;
-    font-size: 2rem;
-    letter-spacing: -0.01em;
-    line-height: 1.1;
-  }
-
-  .anaba-section-label {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.7rem;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-    margin-bottom: 0.5rem;
-  }
-
-  .anaba-divider {
-    border: 0;
-    border-top: 1px solid var(--rule);
-    margin: 1.5rem 0;
-  }
-
-  .anaba-paste-zone {
-    border: 1px dashed var(--rule);
-    background: var(--paper-2);
-    padding: 1rem;
-    transition: all 0.15s ease;
-  }
+  .anaba-masthead { border-bottom: 1px solid var(--rule); padding: 1.5rem 0 1rem 0; }
+  .anaba-masthead-title { font-family: 'Fraunces', serif; font-weight: 500; font-size: 2rem; letter-spacing: -0.01em; line-height: 1.1; }
+  .anaba-section-label { font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.5rem; }
+  .anaba-divider { border: 0; border-top: 1px solid var(--rule); margin: 1.5rem 0; }
+  .anaba-paste-zone { border: 1px dashed var(--rule); background: var(--paper-2); padding: 1rem; transition: all 0.15s ease; }
   .anaba-paste-zone:focus-within { border-color: var(--ochre); }
-
-  .anaba-summary-prose {
-    font-family: 'Fraunces', Georgia, serif;
-    font-weight: 400;
-    font-size: 1.025rem;
-    line-height: 1.7;
-    color: var(--ink);
-  }
-
+  .anaba-summary-prose { font-family: 'Fraunces', Georgia, serif; font-weight: 400; font-size: 1.025rem; line-height: 1.7; color: var(--ink); }
   .anaba-fade-in { animation: anaba-fade-in 0.3s ease; }
   @keyframes anaba-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-
-  .anaba-grain {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.025;
-    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
-    mix-blend-mode: overlay;
-    z-index: 1;
-  }
-
-  .anaba-tab-row {
-    display: flex;
-    gap: 0;
-    margin-bottom: 1rem;
-    border-bottom: 1px solid var(--rule);
-  }
-  .anaba-tab {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    padding: 0.6rem 1rem;
-    color: var(--ink-faint);
-    cursor: pointer;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-  }
-  .anaba-tab:hover { color: var(--ink-dim); }
-  .anaba-tab.active { color: var(--ochre); border-bottom-color: var(--ochre); }
+  .anaba-grain { position: fixed; inset: 0; pointer-events: none; opacity: 0.025; background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); mix-blend-mode: overlay; z-index: 1; }
+  .anaba-banner { background: var(--paper-3); border: 1px solid var(--rule); padding: 0.6rem 0.9rem; font-size: 0.82rem; color: var(--ink-dim); margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: flex-start; }
 `;
-
-// ---------------------------------------------------------------------------
-// UI primitives
-// ---------------------------------------------------------------------------
 
 function Pill({ children, variant = "default", icon: Icon }) {
   const cls = variant === "ochre" ? "anaba-pill anaba-pill-ochre" : variant === "rust" ? "anaba-pill anaba-pill-rust" : "anaba-pill";
-  return (
-    <span className={cls}>
-      {Icon && <Icon size={10} />}
-      {children}
-    </span>
-  );
+  return <span className={cls}>{Icon && <Icon size={10} />}{children}</span>;
 }
 
 function SectionLabel({ children }) {
@@ -449,185 +202,126 @@ function SectionLabel({ children }) {
 }
 
 // ---------------------------------------------------------------------------
-// Add view
+// Add view: paste skill output, preview, "Open on GitHub" to commit
 // ---------------------------------------------------------------------------
 
-function AddView({ onSave, onCancel, existing }) {
-  const [mode, setMode] = useState("paste"); // paste | manual
+function AddView({ onCancel, existing }) {
   const [pasted, setPasted] = useState("");
   const [parseError, setParseError] = useState(null);
   const [draft, setDraft] = useState(null);
-  const [saveError, setSaveError] = useState(null);
 
   const tryParse = () => {
     setParseError(null);
     try {
       const parsed = extractJSONFromPaste(pasted);
+      if (!parsed.issueNumber) throw new Error("The parsed JSON has no issueNumber. Edit the JSON and try again.");
       setDraft(parsed);
     } catch (e) {
       setParseError(e.message);
     }
   };
 
-  const startManual = () => {
-    setDraft(emptyDraft());
-    setMode("manual");
-  };
-
-  const updateDraft = (patch) => setDraft((d) => ({ ...d, ...patch }));
-  const updateList = (field, value) => {
-    const items = value.split(",").map((s) => s.trim()).filter(Boolean);
-    updateDraft({ [field]: items });
-  };
-
-  const handleSave = () => {
-    setSaveError(null);
-    if (!draft.issueNumber) {
-      setSaveError("Issue number is required to save");
-      return;
-    }
-    if (existing[draft.issueNumber]) {
-      const ok = window.confirm(`Issue ${draft.issueNumber} already exists. Overwrite?`);
-      if (!ok) return;
-    }
-    onSave(draft);
-  };
-
-  // Initial picker (no draft yet)
   if (!draft) {
     return (
       <div className="anaba-fade-in">
-        <div className="anaba-tab-row">
-          <button className={`anaba-tab ${mode === "paste" ? "active" : ""}`} onClick={() => setMode("paste")}>
-            Paste from skill
-          </button>
-          <button className={`anaba-tab ${mode === "manual" ? "active" : ""}`} onClick={startManual}>
-            Manual entry
-          </button>
+        <SectionLabel>Paste the skill output</SectionLabel>
+        <div className="anaba-dim" style={{ fontSize: "0.85rem", marginBottom: "0.75rem" }}>
+          In Claude, drop a screenshot of an al-Naba editorial. The al-naba-analyser skill produces a JSON block. Paste it below.
         </div>
-
-        {mode === "paste" && (
-          <div>
-            <SectionLabel>Paste the skill output</SectionLabel>
-            <div className="anaba-dim" style={{ fontSize: "0.85rem", marginBottom: "0.75rem" }}>
-              In Claude, drop a screenshot of an al-Naba editorial. The al-naba-analyser skill produces a JSON block. Copy the whole response, or just the JSON, and paste it here.
-            </div>
-            <div className="anaba-paste-zone">
-              <textarea
-                className="anaba-textarea anaba-textarea-mono"
-                rows={10}
-                placeholder='Paste the full skill output (narrative + ```json ... ``` block) or just the JSON object.'
-                value={pasted}
-                onChange={(e) => setPasted(e.target.value)}
-                style={{ border: "none", background: "transparent", padding: 0 }}
-              />
-            </div>
-            {parseError && (
-              <div className="anaba-rust" style={{ fontSize: "0.85rem", marginTop: "0.5rem", display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                <AlertCircle size={14} /> {parseError}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
-              <button className="anaba-button anaba-button-primary" onClick={tryParse} disabled={!pasted.trim()}>
-                <ClipboardPaste size={14} /> Parse and review
-              </button>
-              <button className="anaba-button" onClick={onCancel}>Cancel</button>
-            </div>
+        <div className="anaba-paste-zone">
+          <textarea className="anaba-textarea anaba-textarea-mono" rows={10} placeholder='Paste the full skill output or just the JSON object.' value={pasted} onChange={(e) => setPasted(e.target.value)} style={{ border: "none", background: "transparent", padding: 0 }} />
+        </div>
+        {parseError && (
+          <div className="anaba-rust" style={{ fontSize: "0.85rem", marginTop: "0.5rem", display: "flex", gap: "0.4rem", alignItems: "center" }}>
+            <AlertCircle size={14} /> {parseError}
           </div>
         )}
+        <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+          <button className="anaba-button anaba-button-primary" onClick={tryParse} disabled={!pasted.trim()}>
+            <ClipboardPaste size={14} /> Preview
+          </button>
+          <button className="anaba-button" onClick={onCancel}>Cancel</button>
+        </div>
       </div>
     );
   }
 
-  // Review and edit
+  const exists = existing[draft.issueNumber];
+  const githubURL = githubNewFileURL(draft);
+
   return (
     <div className="anaba-fade-in">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "1.5rem", gap: "1rem", flexWrap: "wrap" }}>
         <div>
-          <SectionLabel>Review and confirm</SectionLabel>
+          <SectionLabel>Preview</SectionLabel>
           <div className="anaba-dim" style={{ fontSize: "0.85rem" }}>
-            Adjust any field before saving. List fields are comma-separated. Key claims are semicolon-separated.
+            Confirm everything looks right, then commit it to the repo.
           </div>
         </div>
         {draft.confidence && draft.confidence !== "unknown" && (
-          <Pill variant={draft.confidence === "high" ? "ochre" : draft.confidence === "low" ? "rust" : "default"}>
-            confidence: {draft.confidence}
-          </Pill>
+          <Pill variant={draft.confidence === "high" ? "ochre" : draft.confidence === "low" ? "rust" : "default"}>confidence: {draft.confidence}</Pill>
         )}
       </div>
 
-      {saveError && (
+      {exists && (
         <div className="anaba-card" style={{ borderColor: "var(--rust)", marginBottom: "1rem" }}>
-          <div className="anaba-rust" style={{ fontSize: "0.85rem" }}>{saveError}</div>
+          <div className="anaba-rust" style={{ fontSize: "0.85rem", display: "flex", gap: "0.4rem", alignItems: "flex-start" }}>
+            <AlertCircle size={14} style={{ flexShrink: 0, marginTop: "0.1rem" }} />
+            <span>Issue {draft.issueNumber} already exists in the tracker. If you commit, you'll need to delete or overwrite the existing file first.</span>
+          </div>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
-        <div>
-          <SectionLabel>Issue number *</SectionLabel>
-          <input className="anaba-input mono" type="number" value={draft.issueNumber ?? ""} onChange={(e) => updateDraft({ issueNumber: parseInt(e.target.value) || null })} />
+      <div className="anaba-card" style={{ marginBottom: "1.5rem" }}>
+        <div className="mono anaba-ochre" style={{ fontSize: "0.8rem", marginBottom: "0.3rem" }}>
+          ISSUE {draft.issueNumber} {draft.publicationDate && `· ${draft.publicationDate}`}
         </div>
-        <div>
-          <SectionLabel>Publication date</SectionLabel>
-          <input className="anaba-input mono" type="date" value={draft.publicationDate || ""} onChange={(e) => updateDraft({ publicationDate: e.target.value })} />
-        </div>
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>Title</SectionLabel>
-        <input className="anaba-input display" style={{ fontSize: "1.05rem" }} value={draft.title || ""} onChange={(e) => updateDraft({ title: e.target.value })} />
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>Analytical summary</SectionLabel>
-        <textarea className="anaba-textarea" rows={8} value={draft.summary || ""} onChange={(e) => updateDraft({ summary: e.target.value })} />
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>Themes (comma separated)</SectionLabel>
-        <input className="anaba-input mono" value={(draft.themes || []).join(", ")} onChange={(e) => updateList("themes", e.target.value)} />
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
-        <div>
-          <SectionLabel>Geographic focus</SectionLabel>
-          <input className="anaba-input mono" value={(draft.geographicFocus || []).join(", ")} onChange={(e) => updateList("geographicFocus", e.target.value)} />
-        </div>
-        <div>
-          <SectionLabel>Groups mentioned</SectionLabel>
-          <input className="anaba-input mono" value={(draft.groupsMentioned || []).join(", ")} onChange={(e) => updateList("groupsMentioned", e.target.value)} />
+        <div className="display" style={{ fontSize: "1.2rem", fontWeight: 500, marginBottom: "0.75rem" }}>{draft.title}</div>
+        <div className="anaba-dim" style={{ fontSize: "0.88rem", lineHeight: 1.55, marginBottom: "0.75rem", whiteSpace: "pre-wrap" }}>{draft.summary}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
+          {draft.themes.slice(0, 6).map((t, i) => <Pill key={`t${i}`} variant="ochre" icon={Tag}>{t}</Pill>)}
+          {draft.geographicFocus.slice(0, 4).map((t, i) => <Pill key={`g${i}`} icon={MapPin}>{t}</Pill>)}
         </div>
       </div>
 
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>Individuals mentioned</SectionLabel>
-        <input className="anaba-input mono" value={(draft.individualsMentioned || []).join(", ")} onChange={(e) => updateList("individualsMentioned", e.target.value)} />
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>Key claims (semicolon separated)</SectionLabel>
-        <textarea className="anaba-textarea" rows={3} value={(draft.keyClaims || []).join("; ")} onChange={(e) => updateDraft({ keyClaims: e.target.value.split(";").map((s) => s.trim()).filter(Boolean) })} />
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>Significance assessment</SectionLabel>
-        <textarea className="anaba-textarea" rows={3} value={draft.significanceAssessment || ""} onChange={(e) => updateDraft({ significanceAssessment: e.target.value })} />
-      </div>
-
-      <div style={{ marginBottom: "1.5rem" }}>
-        <SectionLabel>Analyst notes (optional)</SectionLabel>
-        <textarea className="anaba-textarea" rows={2} placeholder="Add any analyst observations or context" value={draft.manualNotes || ""} onChange={(e) => updateDraft({ manualNotes: e.target.value })} />
-      </div>
-
-      <div style={{ display: "flex", gap: "0.5rem" }}>
-        <button className="anaba-button anaba-button-primary" onClick={handleSave}>
-          <Save size={14} /> Save to tracker
-        </button>
-        <button className="anaba-button" onClick={() => setDraft(null)}>
-          <ArrowLeft size={14} /> Back
-        </button>
-        <button className="anaba-button" onClick={onCancel}>Cancel</button>
-      </div>
+      {GITHUB_REPO ? (
+        <>
+          <SectionLabel>Commit to the repo</SectionLabel>
+          <div className="anaba-dim" style={{ fontSize: "0.85rem", marginBottom: "1rem", lineHeight: 1.55 }}>
+            The button below opens GitHub's "Create new file" page with the filename and content pre-filled. Review on GitHub, then click <strong>Commit changes</strong>. The tracker will refresh automatically once the deploy finishes (1 to 2 minutes).
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            <a className="anaba-button anaba-button-primary" href={githubURL} target="_blank" rel="noopener noreferrer">
+              <Github size={14} /> Open on GitHub to commit
+            </a>
+            <button className="anaba-button" onClick={() => {
+              downloadFile(JSON.stringify(draft, null, 2), `${draft.issueNumber}.json`, "application/json");
+            }}>
+              <Download size={14} /> Download JSON
+            </button>
+            <button className="anaba-button" onClick={() => setDraft(null)}>
+              <ArrowLeft size={14} /> Back
+            </button>
+            <button className="anaba-button" onClick={onCancel}>Cancel</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="anaba-banner">
+            <AlertCircle size={14} className="anaba-rust" style={{ flexShrink: 0, marginTop: "0.15rem" }} />
+            <span>GitHub repo isn't configured (VITE_GITHUB_REPO env var). You can download the JSON below and upload it manually to <code>data/editorials/</code> in your repo.</span>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button className="anaba-button anaba-button-primary" onClick={() => {
+              downloadFile(JSON.stringify(draft, null, 2), `${draft.issueNumber}.json`, "application/json");
+            }}>
+              <Download size={14} /> Download JSON
+            </button>
+            <button className="anaba-button" onClick={() => setDraft(null)}><ArrowLeft size={14} /> Back</button>
+            <button className="anaba-button" onClick={onCancel}>Cancel</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -652,9 +346,7 @@ function SharedTags({ a, b }) {
   const shared = [];
   for (const field of ["themes", "geographicFocus", "groupsMentioned", "individualsMentioned"]) {
     const sa = new Set((a[field] || []).map(normaliseTag));
-    for (const t of b[field] || []) {
-      if (sa.has(normaliseTag(t))) shared.push(t);
-    }
+    for (const t of b[field] || []) if (sa.has(normaliseTag(t))) shared.push(t);
   }
   if (shared.length === 0) return null;
   return (
@@ -664,59 +356,44 @@ function SharedTags({ a, b }) {
   );
 }
 
-function DetailView({ editorial, allEditorials, onBack, onDelete, onUpdate, onSelect }) {
-  const [editingNotes, setEditingNotes] = useState(false);
-  const [notesDraft, setNotesDraft] = useState(editorial.manualNotes || "");
+function DetailView({ editorial, allEditorials, onBack, onSelect }) {
   const similar = useMemo(() => findSimilar(editorial, allEditorials), [editorial, allEditorials]);
-
-  useEffect(() => {
-    setNotesDraft(editorial.manualNotes || "");
-    setEditingNotes(false);
-  }, [editorial.issueNumber]);
-
-  const saveNotes = () => {
-    onUpdate({ ...editorial, manualNotes: notesDraft });
-    setEditingNotes(false);
-  };
+  const editURL = githubEditFileURL(editorial.issueNumber);
+  const viewURL = githubViewFileURL(editorial.issueNumber);
 
   return (
     <div className="anaba-fade-in">
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1.5rem", gap: "0.5rem", flexWrap: "wrap" }}>
         <button className="anaba-button" onClick={onBack}><ArrowLeft size={14} /> Library</button>
-        <button className="anaba-button anaba-button-danger" onClick={() => {
-          if (window.confirm(`Delete issue ${editorial.issueNumber}? This cannot be undone.`)) {
-            onDelete(editorial.issueNumber);
-          }
-        }}>
-          <Trash2 size={14} /> Delete
-        </button>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          {editURL && (
+            <a className="anaba-button" href={editURL} target="_blank" rel="noopener noreferrer">
+              <Edit3 size={14} /> Edit on GitHub
+            </a>
+          )}
+          {viewURL && (
+            <a className="anaba-button anaba-button-danger" href={viewURL} target="_blank" rel="noopener noreferrer" title="Delete via GitHub: click the trash icon at the top right of the file view">
+              <Trash2 size={14} /> Delete on GitHub
+            </a>
+          )}
+        </div>
       </div>
-
       <div style={{ marginBottom: "0.5rem", display: "flex", gap: "0.5rem", alignItems: "center" }}>
         <span className="mono anaba-ochre" style={{ fontSize: "0.875rem", letterSpacing: "0.05em" }}>ISSUE {editorial.issueNumber}</span>
         {editorial.publicationDate && (
           <span className="mono anaba-faint" style={{ fontSize: "0.8rem" }}>· {editorial.publicationDate}</span>
         )}
       </div>
-
-      <h1 className="display" style={{ fontSize: "2rem", fontWeight: 500, lineHeight: 1.15, marginBottom: "1.5rem", marginTop: 0 }}>
-        {editorial.title}
-      </h1>
-
+      <h1 className="display" style={{ fontSize: "2rem", fontWeight: 500, lineHeight: 1.15, marginBottom: "1.5rem", marginTop: 0 }}>{editorial.title}</h1>
       <hr className="anaba-divider" />
-
       <SectionLabel>Summary</SectionLabel>
       <div className="anaba-summary-prose" style={{ marginBottom: "2rem", whiteSpace: "pre-wrap" }}>{editorial.summary}</div>
-
       {editorial.significanceAssessment && (
         <>
           <SectionLabel>Significance</SectionLabel>
-          <div className="anaba-summary-prose" style={{ marginBottom: "2rem", fontStyle: "italic", color: "var(--ink-dim)" }}>
-            {editorial.significanceAssessment}
-          </div>
+          <div className="anaba-summary-prose" style={{ marginBottom: "2rem", fontStyle: "italic", color: "var(--ink-dim)" }}>{editorial.significanceAssessment}</div>
         </>
       )}
-
       {editorial.keyClaims?.length > 0 && (
         <>
           <SectionLabel>Key claims</SectionLabel>
@@ -727,34 +404,19 @@ function DetailView({ editorial, allEditorials, onBack, onDelete, onUpdate, onSe
           </ul>
         </>
       )}
-
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2rem", marginBottom: "2rem" }}>
         <TagBlock title="Themes" items={editorial.themes} icon={Tag} variant="ochre" />
         <TagBlock title="Geographic focus" items={editorial.geographicFocus} icon={MapPin} />
         <TagBlock title="Groups" items={editorial.groupsMentioned} icon={Users} />
         <TagBlock title="Individuals" items={editorial.individualsMentioned} icon={User} />
       </div>
-
-      <hr className="anaba-divider" />
-
-      <SectionLabel>Analyst notes</SectionLabel>
-      {editingNotes ? (
-        <div>
-          <textarea className="anaba-textarea" rows={4} value={notesDraft} onChange={(e) => setNotesDraft(e.target.value)} />
-          <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
-            <button className="anaba-button anaba-button-primary" onClick={saveNotes}><Save size={14} /> Save</button>
-            <button className="anaba-button" onClick={() => { setNotesDraft(editorial.manualNotes || ""); setEditingNotes(false); }}>Cancel</button>
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "2rem" }}>
-          <div className="anaba-dim" style={{ fontSize: "0.95rem", fontStyle: editorial.manualNotes ? "normal" : "italic", flex: 1, whiteSpace: "pre-wrap" }}>
-            {editorial.manualNotes || "No notes added."}
-          </div>
-          <button className="anaba-button" onClick={() => setEditingNotes(true)}><Edit3 size={14} /> Edit</button>
-        </div>
+      {editorial.manualNotes && (
+        <>
+          <hr className="anaba-divider" />
+          <SectionLabel>Analyst notes</SectionLabel>
+          <div className="anaba-dim" style={{ fontSize: "0.95rem", marginBottom: "2rem", whiteSpace: "pre-wrap" }}>{editorial.manualNotes}</div>
+        </>
       )}
-
       {similar.length > 0 && (
         <>
           <hr className="anaba-divider" />
@@ -784,29 +446,18 @@ function DetailView({ editorial, allEditorials, onBack, onDelete, onUpdate, onSe
 // Library view
 // ---------------------------------------------------------------------------
 
-function LibraryView({ editorials, onSelect, onAdd, onExportCSV, onExportBackup, onImportBackup, filter, setFilter, tagFilter, setTagFilter }) {
+function LibraryView({ editorials, onSelect, onAdd, onExportCSV, filter, setFilter, tagFilter, setTagFilter }) {
   const sorted = useMemo(() => [...editorials].sort((a, b) => (b.issueNumber || 0) - (a.issueNumber || 0)), [editorials]);
-  const fileInputRef = useRef(null);
 
   const filtered = useMemo(() => {
     let result = sorted;
     if (filter) {
       const q = filter.toLowerCase();
-      result = result.filter((e) => {
-        return (
-          String(e.issueNumber).includes(q) ||
-          (e.title || "").toLowerCase().includes(q) ||
-          (e.summary || "").toLowerCase().includes(q) ||
-          (e.manualNotes || "").toLowerCase().includes(q)
-        );
-      });
+      result = result.filter((e) => String(e.issueNumber).includes(q) || (e.title || "").toLowerCase().includes(q) || (e.summary || "").toLowerCase().includes(q) || (e.manualNotes || "").toLowerCase().includes(q));
     }
     if (tagFilter) {
       const tf = normaliseTag(tagFilter);
-      result = result.filter((e) => {
-        const all = [...(e.themes || []), ...(e.geographicFocus || []), ...(e.groupsMentioned || []), ...(e.individualsMentioned || [])];
-        return all.some((t) => normaliseTag(t) === tf);
-      });
+      result = result.filter((e) => [...(e.themes || []), ...(e.geographicFocus || []), ...(e.groupsMentioned || []), ...(e.individualsMentioned || [])].some((t) => normaliseTag(t) === tf));
     }
     return result;
   }, [sorted, filter, tagFilter]);
@@ -819,37 +470,13 @@ function LibraryView({ editorials, onSelect, onAdd, onExportCSV, onExportBackup,
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "1.5rem", gap: "1rem", flexWrap: "wrap" }}>
         <div>
           <SectionLabel>Library</SectionLabel>
-          <div className="anaba-dim" style={{ fontSize: "0.85rem" }}>
-            {editorials.length} editorial{editorials.length === 1 ? "" : "s"} tracked
-          </div>
+          <div className="anaba-dim" style={{ fontSize: "0.85rem" }}>{editorials.length} editorial{editorials.length === 1 ? "" : "s"} tracked</div>
         </div>
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <button className="anaba-button" onClick={() => fileInputRef.current?.click()}>
-            <FileText size={14} /> Import backup
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json,.json"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onImportBackup(f);
-              e.target.value = "";
-            }}
-          />
-          <button className="anaba-button" onClick={onExportBackup} disabled={editorials.length === 0}>
-            <Download size={14} /> Backup
-          </button>
-          <button className="anaba-button" onClick={onExportCSV} disabled={editorials.length === 0}>
-            <Download size={14} /> CSV
-          </button>
-          <button className="anaba-button anaba-button-primary" onClick={onAdd}>
-            <Plus size={14} /> Add editorial
-          </button>
+          <button className="anaba-button" onClick={onExportCSV} disabled={editorials.length === 0}><Download size={14} /> CSV</button>
+          <button className="anaba-button anaba-button-primary" onClick={onAdd}><Plus size={14} /> Add editorial</button>
         </div>
       </div>
-
       {editorials.length > 0 && (
         <div style={{ marginBottom: "1.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
           <div>
@@ -874,7 +501,6 @@ function LibraryView({ editorials, onSelect, onAdd, onExportCSV, onExportBackup,
           </div>
         </div>
       )}
-
       {editorials.length > 0 && (
         <div style={{ marginBottom: "1.5rem", display: "flex", gap: "0.5rem", alignItems: "center" }}>
           <div style={{ flex: 1, position: "relative" }}>
@@ -882,23 +508,16 @@ function LibraryView({ editorials, onSelect, onAdd, onExportCSV, onExportBackup,
             <input className="anaba-input" style={{ paddingLeft: "2rem" }} placeholder="Search issue, title, summary, notes" value={filter} onChange={(e) => setFilter(e.target.value)} />
           </div>
           {tagFilter && (
-            <button className="anaba-button" onClick={() => setTagFilter("")}>
-              <X size={14} /> Tag: {tagFilter}
-            </button>
+            <button className="anaba-button" onClick={() => setTagFilter("")}><X size={14} /> Tag: {tagFilter}</button>
           )}
         </div>
       )}
-
       {editorials.length === 0 ? (
         <div className="anaba-card" style={{ textAlign: "center", padding: "3rem 2rem" }}>
           <Library size={28} className="anaba-faint" style={{ margin: "0 auto 1rem", display: "block" }} />
           <div className="display" style={{ fontSize: "1.1rem", marginBottom: "0.5rem" }}>The library is empty</div>
-          <div className="anaba-dim" style={{ fontSize: "0.875rem", marginBottom: "1.5rem" }}>
-            Add an editorial by pasting the output of the al-naba-analyser skill.
-          </div>
-          <button className="anaba-button anaba-button-primary" onClick={onAdd}>
-            <Plus size={14} /> Add the first one
-          </button>
+          <div className="anaba-dim" style={{ fontSize: "0.875rem", marginBottom: "1.5rem" }}>Add an editorial by pasting the output of the al-naba-analyser skill.</div>
+          <button className="anaba-button anaba-button-primary" onClick={onAdd}><Plus size={14} /> Add the first one</button>
         </div>
       ) : filtered.length === 0 ? (
         <div className="anaba-dim" style={{ fontStyle: "italic", padding: "1rem 0" }}>No editorials match the current filter.</div>
@@ -927,289 +546,16 @@ function LibraryView({ editorials, onSelect, onAdd, onExportCSV, onExportBackup,
 }
 
 // ---------------------------------------------------------------------------
-// Settings view
+// Root
 // ---------------------------------------------------------------------------
 
-function SettingsView({ onBack, onSyncChange }) {
-  const initial = getSyncConfig();
-  const [pat, setPat] = useState(initial.pat);
-  const [gistId, setGistId] = useState(initial.gistId);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState(null);
-  const [error, setError] = useState(null);
-  const lastSync = getLastSync();
-
-  const showOK = (m) => { setMessage(m); setError(null); };
-  const showErr = (m) => { setError(m); setMessage(null); };
-
-  const handleSave = () => {
-    if (!pat.trim() || !gistId.trim()) {
-      showErr("Both PAT and Gist ID are required.");
-      return;
-    }
-    setSyncConfig({ pat: pat.trim(), gistId: gistId.trim() });
-    showOK("Sync settings saved. The next change will sync.");
-    onSyncChange();
-  };
-
-  const handleCreate = async () => {
-    if (!pat.trim()) {
-      showErr("Paste a PAT first, then click Create gist.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const newId = await createGist(pat.trim());
-      setGistId(newId);
-      setSyncConfig({ pat: pat.trim(), gistId: newId });
-      showOK(`New private gist created. ID: ${newId}`);
-      onSyncChange();
-    } catch (e) {
-      showErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleTest = async () => {
-    if (!pat.trim() || !gistId.trim()) {
-      showErr("Save the settings first.");
-      return;
-    }
-    setBusy(true);
-    setSyncConfig({ pat: pat.trim(), gistId: gistId.trim() });
-    try {
-      const data = await pullFromGist();
-      const count = Object.keys(data).length;
-      showOK(`Connection works. Gist currently holds ${count} editorial${count === 1 ? "" : "s"}.`);
-      onSyncChange();
-    } catch (e) {
-      showErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDisable = () => {
-    if (!window.confirm("Disable sync? Your local data stays. Cross-device sync will stop until you re-enable it.")) return;
-    clearSyncConfig();
-    setPat("");
-    setGistId("");
-    showOK("Sync disabled. Local data is unchanged.");
-    onSyncChange();
-  };
-
-  return (
-    <div className="anaba-fade-in">
-      <button className="anaba-button" onClick={onBack} style={{ marginBottom: "1.5rem" }}>
-        <ArrowLeft size={14} /> Library
-      </button>
-
-      <SectionLabel>Cross-device sync via private GitHub Gist</SectionLabel>
-      <div className="anaba-dim" style={{ fontSize: "0.875rem", marginBottom: "1.5rem", lineHeight: 1.6 }}>
-        The tracker can mirror your data to a private GitHub Gist so it follows you across devices. Free, uses your existing GitHub account. Local copy is kept for speed and offline use.
-      </div>
-
-      <div className="anaba-card" style={{ marginBottom: "1.5rem" }}>
-        <SectionLabel>Step 1: Create a Personal Access Token</SectionLabel>
-        <div className="anaba-dim" style={{ fontSize: "0.875rem", marginBottom: "0.75rem", lineHeight: 1.6 }}>
-          Go to GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. Give it the <strong>Gists: read and write</strong> permission (under "Account permissions"). No repository permissions needed. Set an expiration that suits you. Copy the token (it shows only once).
-        </div>
-        <a
-          href="https://github.com/settings/personal-access-tokens/new"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="anaba-button"
-          style={{ textDecoration: "none" }}
-        >
-          <ExternalLink size={14} /> Open GitHub token page
-        </a>
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <SectionLabel>GitHub Personal Access Token</SectionLabel>
-        <input
-          className="anaba-input mono"
-          type="password"
-          placeholder="github_pat_..."
-          value={pat}
-          onChange={(e) => setPat(e.target.value)}
-          autoComplete="off"
-        />
-        <div className="anaba-faint" style={{ fontSize: "0.72rem", marginTop: "0.3rem" }}>
-          Stored only in this browser's localStorage. Never sent anywhere except api.github.com.
-        </div>
-      </div>
-
-      <div style={{ marginBottom: "1.5rem" }}>
-        <SectionLabel>Gist ID</SectionLabel>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <input
-            className="anaba-input mono"
-            placeholder="paste an existing gist ID, or click Create"
-            value={gistId}
-            onChange={(e) => setGistId(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <button className="anaba-button" onClick={handleCreate} disabled={busy || !pat.trim()}>
-            {busy ? <RefreshCw size={14} className="anaba-spin" /> : <Plus size={14} />} Create
-          </button>
-        </div>
-        <div className="anaba-faint" style={{ fontSize: "0.72rem", marginTop: "0.3rem" }}>
-          On your first device, click <strong>Create</strong> to make a new private gist. On other devices, paste the same Gist ID and the same PAT (or a different PAT with gist access) to share the data.
-        </div>
-      </div>
-
-      {message && (
-        <div className="anaba-card" style={{ borderColor: "var(--ochre-dim)", marginBottom: "1rem", display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
-          <CheckCircle2 size={16} className="anaba-ochre" style={{ flexShrink: 0, marginTop: "0.15rem" }} />
-          <div className="anaba-ochre" style={{ fontSize: "0.85rem", wordBreak: "break-all" }}>{message}</div>
-        </div>
-      )}
-      {error && (
-        <div className="anaba-card" style={{ borderColor: "var(--rust)", marginBottom: "1rem", display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
-          <AlertCircle size={16} className="anaba-rust" style={{ flexShrink: 0, marginTop: "0.15rem" }} />
-          <div className="anaba-rust" style={{ fontSize: "0.85rem" }}>{error}</div>
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        <button className="anaba-button anaba-button-primary" onClick={handleSave} disabled={busy}>
-          <Save size={14} /> Save sync settings
-        </button>
-        <button className="anaba-button" onClick={handleTest} disabled={busy}>
-          {busy ? <RefreshCw size={14} className="anaba-spin" /> : <RefreshCw size={14} />} Test connection
-        </button>
-        {(initial.pat || initial.gistId) && (
-          <button className="anaba-button anaba-button-danger" onClick={handleDisable}>
-            <CloudOff size={14} /> Disable sync
-          </button>
-        )}
-      </div>
-
-      {lastSync && (
-        <div className="anaba-faint" style={{ fontSize: "0.72rem", marginTop: "1.5rem" }}>
-          Last successful sync: {new Date(lastSync).toLocaleString("en-GB")}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-
 export default function Tracker() {
-  const [editorials, setEditorials] = useState({});
-  const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState("library");
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [filter, setFilter] = useState("");
   const [tagFilter, setTagFilter] = useState("");
 
-  // Sync state
-  const [syncEnabled, setSyncEnabled] = useState(isSyncEnabled());
-  const [syncStatus, setSyncStatus] = useState("idle"); // idle, syncing, error, off
-  const [syncError, setSyncError] = useState(null);
-  const pendingPush = useRef(null);
-  const initialPullDone = useRef(false);
-
-  // Initial load: local first, then merge with gist if sync is enabled.
-  useEffect(() => {
-    const local = loadEditorials();
-    setEditorials(local);
-    setLoaded(true);
-
-    if (isSyncEnabled()) {
-      (async () => {
-        setSyncStatus("syncing");
-        try {
-          const remote = await pullFromGist();
-          const merged = mergeEditorials(local, remote);
-          const localStr = JSON.stringify(local);
-          const mergedStr = JSON.stringify(merged);
-          const remoteStr = JSON.stringify(remote);
-
-          if (mergedStr !== localStr) {
-            setEditorials(merged);
-            saveEditorials(merged);
-          }
-          if (mergedStr !== remoteStr) {
-            // Local had something remote didn't. Push the merged result so remote catches up.
-            try {
-              await pushToGist(merged);
-            } catch {
-              // Non-fatal. The next save will push.
-            }
-          }
-          setSyncStatus("idle");
-          setSyncError(null);
-        } catch (e) {
-          setSyncStatus("error");
-          setSyncError(e.message);
-        } finally {
-          initialPullDone.current = true;
-        }
-      })();
-    } else {
-      setSyncStatus("off");
-      initialPullDone.current = true;
-    }
-  }, []);
-
-  // Push to gist when editorials change. Debounced 800ms.
-  // Only runs after initial pull to avoid clobbering remote with local-only data.
-  useEffect(() => {
-    if (!loaded) return;
-    if (!syncEnabled) return;
-    if (!initialPullDone.current) return;
-
-    if (pendingPush.current) clearTimeout(pendingPush.current);
-    pendingPush.current = setTimeout(async () => {
-      setSyncStatus("syncing");
-      try {
-        await pushToGist(editorials);
-        setSyncStatus("idle");
-        setSyncError(null);
-      } catch (e) {
-        setSyncStatus("error");
-        setSyncError(e.message);
-      }
-    }, 800);
-
-    return () => {
-      if (pendingPush.current) clearTimeout(pendingPush.current);
-    };
-  }, [editorials, syncEnabled, loaded]);
-
-  const editorialList = useMemo(() => Object.values(editorials), [editorials]);
-
-  const handleSave = (draft) => {
-    const entry = {
-      ...draft,
-      createdAt: editorials[draft.issueNumber]?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const next = { ...editorials, [draft.issueNumber]: entry };
-    setEditorials(next);
-    saveEditorials(next);
-    setSelectedIssue(draft.issueNumber);
-    setView("detail");
-  };
-
-  const handleUpdate = (entry) => {
-    const next = { ...editorials, [entry.issueNumber]: { ...entry, updatedAt: new Date().toISOString() } };
-    setEditorials(next);
-    saveEditorials(next);
-  };
-
-  const handleDelete = (issueNumber) => {
-    const next = { ...editorials };
-    delete next[issueNumber];
-    setEditorials(next);
-    saveEditorials(next);
-    setView("library");
-    setSelectedIssue(null);
-  };
+  const editorialList = useMemo(() => Object.values(ALL_EDITORIALS), []);
 
   const handleExportCSV = () => {
     const csv = toCSV(editorialList);
@@ -1217,64 +563,7 @@ export default function Tracker() {
     downloadFile(csv, `al-naba-tracker-${date}.csv`, "text/csv;charset=utf-8");
   };
 
-  const handleExportBackup = () => exportBackup(editorials);
-
-  const handleImportBackup = (file) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        const incoming = data.editorials || data;
-        if (typeof incoming !== "object") throw new Error("Backup file does not contain an editorials object");
-        const merged = { ...editorials };
-        let added = 0;
-        let overwritten = 0;
-        for (const [k, v] of Object.entries(incoming)) {
-          if (merged[k]) overwritten++;
-          else added++;
-          merged[k] = v;
-        }
-        const ok = window.confirm(`Import ${added} new and overwrite ${overwritten} existing entries?`);
-        if (!ok) return;
-        setEditorials(merged);
-        saveEditorials(merged);
-      } catch (e) {
-        window.alert(`Could not import: ${e.message}`);
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const handleSyncNow = async () => {
-    if (!syncEnabled) return;
-    setSyncStatus("syncing");
-    try {
-      const remote = await pullFromGist();
-      const merged = mergeEditorials(editorials, remote);
-      setEditorials(merged);
-      saveEditorials(merged);
-      await pushToGist(merged);
-      setSyncStatus("idle");
-      setSyncError(null);
-    } catch (e) {
-      setSyncStatus("error");
-      setSyncError(e.message);
-    }
-  };
-
-  const handleSyncChange = () => {
-    setSyncEnabled(isSyncEnabled());
-    setSyncStatus(isSyncEnabled() ? "idle" : "off");
-    setSyncError(null);
-    initialPullDone.current = true;
-  };
-
-  const syncPillProps = (() => {
-    if (syncStatus === "off") return { icon: CloudOff, text: "sync off", variant: "default", title: "Click to configure cross-device sync" };
-    if (syncStatus === "syncing") return { icon: RefreshCw, text: "syncing", variant: "default", spinning: true, title: "Syncing with gist..." };
-    if (syncStatus === "error") return { icon: AlertCircle, text: "sync error", variant: "rust", title: syncError || "Sync error. Click for settings." };
-    return { icon: Cloud, text: "synced", variant: "ochre", title: "Synced with gist. Click to manage." };
-  })();
+  const repoURL = GITHUB_REPO ? `https://github.com/${GITHUB_REPO}` : null;
 
   return (
     <>
@@ -1285,56 +574,26 @@ export default function Tracker() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "0.5rem" }}>
             <div>
               <div className="mono anaba-faint" style={{ fontSize: "0.7rem", letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: "0.3rem" }}>
-                Analytical tracker
+                Public analytical tracker
               </div>
               <div className="anaba-masthead-title display">al-Nabaʾ editorials</div>
             </div>
-            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-              {syncEnabled && syncStatus !== "off" && syncStatus !== "syncing" && syncStatus !== "error" && (
-                <button
-                  className="anaba-button"
-                  onClick={handleSyncNow}
-                  title="Force a sync now"
-                  style={{ padding: "0.4rem 0.6rem" }}
-                >
-                  <RefreshCw size={13} />
-                </button>
-              )}
-              <button
-                className={syncPillProps.variant === "rust" ? "anaba-pill anaba-pill-rust" : syncPillProps.variant === "ochre" ? "anaba-pill anaba-pill-ochre" : "anaba-pill"}
-                style={{ cursor: "pointer", border: "1px solid var(--rule)" }}
-                onClick={() => setView("settings")}
-                title={syncPillProps.title}
-              >
-                <syncPillProps.icon size={11} className={syncPillProps.spinning ? "anaba-spin" : ""} />
-                {syncPillProps.text}
-              </button>
-              <button
-                className="anaba-button"
-                onClick={() => setView("settings")}
-                style={{ padding: "0.4rem 0.6rem" }}
-                title="Settings"
-              >
-                <Settings size={14} />
-              </button>
-            </div>
+            {repoURL && (
+              <a className="anaba-button" href={repoURL} target="_blank" rel="noopener noreferrer">
+                <Github size={14} /> Repo
+              </a>
+            )}
           </div>
         </div>
 
         <div style={{ marginTop: "1.5rem" }}>
-          {!loaded ? (
-            <div className="anaba-dim" style={{ padding: "2rem", textAlign: "center" }}>Loading...</div>
-          ) : view === "settings" ? (
-            <SettingsView onBack={() => setView("library")} onSyncChange={handleSyncChange} />
-          ) : view === "add" ? (
-            <AddView existing={editorials} onSave={handleSave} onCancel={() => setView("library")} />
-          ) : view === "detail" && editorials[selectedIssue] ? (
+          {view === "add" ? (
+            <AddView existing={ALL_EDITORIALS} onCancel={() => setView("library")} />
+          ) : view === "detail" && ALL_EDITORIALS[selectedIssue] ? (
             <DetailView
-              editorial={editorials[selectedIssue]}
+              editorial={ALL_EDITORIALS[selectedIssue]}
               allEditorials={editorialList}
               onBack={() => setView("library")}
-              onDelete={handleDelete}
-              onUpdate={handleUpdate}
               onSelect={(n) => { setSelectedIssue(n); window.scrollTo(0, 0); }}
             />
           ) : (
@@ -1343,8 +602,6 @@ export default function Tracker() {
               onSelect={(n) => { setSelectedIssue(n); setView("detail"); window.scrollTo(0, 0); }}
               onAdd={() => setView("add")}
               onExportCSV={handleExportCSV}
-              onExportBackup={handleExportBackup}
-              onImportBackup={handleImportBackup}
               filter={filter}
               setFilter={setFilter}
               tagFilter={tagFilter}
